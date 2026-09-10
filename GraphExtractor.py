@@ -6,7 +6,6 @@ from pathlib import Path
 
 import networkx as nx
 
-# Directories we never want to treat as source code
 SKIP_DIRS = {
     "venv", ".venv", "env", ".env",
     ".git", "__pycache__", ".tox", ".pytest_cache",
@@ -18,10 +17,9 @@ class RepoGraphBuilder:
     def __init__(self, repo_root: str):
         self.repo_root = Path(repo_root).resolve()
         self.graph = nx.DiGraph()
-        self.module_map = {}      # dotted module name -> file path (str)
-        self.func_owner = {}      # "module.Class.method" or "module.func" -> file path
+        self.module_map = {}      
+        self.func_owner = {}     
 
-    # ---------- pass 1: discover files + build module name map ----------
 
     def discover(self):
         py_files = []
@@ -54,10 +52,8 @@ class RepoGraphBuilder:
         except OSError:
             return 0
 
-    # ---------- pass 2: parse each file, add import + call edges ----------
 
     def build(self, py_files):
-        # First pass: register all symbols (functions, methods, classes)
         for path in py_files:
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
@@ -65,7 +61,6 @@ class RepoGraphBuilder:
                 continue
             self._register_symbols(tree, str(path))
 
-        # Second pass: resolve imports and calls now that the symbol table is complete
         for path in py_files:
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
@@ -75,8 +70,6 @@ class RepoGraphBuilder:
             self._add_call_edges(tree, str(path))
 
         return self.graph
-
-    # ---------- symbol registration ----------
 
     def _register_symbols(self, tree, file_path):
         mod_name = self.graph.nodes[file_path]["module"]
@@ -111,8 +104,6 @@ class RepoGraphBuilder:
         )
         self._add_typed_edge(file_path, fq_name, "defines")
 
-    # ---------- import edges ----------
-
     def _add_import_edges(self, tree, file_path):
         mod_name = self.graph.nodes[file_path]["module"]
         for node in ast.walk(tree):
@@ -124,9 +115,7 @@ class RepoGraphBuilder:
                 abs_module = self._resolve_relative(node, mod_name)
                 if not abs_module:
                     continue
-                # Link to the module itself
                 self._link_module(file_path, abs_module)
-                # Try to link to specific imported names (functions/classes)
                 for alias in node.names:
                     target = f"{abs_module}.{alias.name}"
                     if target in self.func_owner:
@@ -162,13 +151,9 @@ class RepoGraphBuilder:
             return True
         return False
 
-    # ---------- call edges (func -> func) ----------
 
     def _add_call_edges(self, tree, file_path):
         mod_name = self.graph.nodes[file_path]["module"]
-        # Walk class-aware so methods get their qualified caller id
-        # (mod.Class.method), not just mod.method — ast.walk() alone loses
-        # the class prefix and silently drops every method's call edges.
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 caller = f"{mod_name}.{node.name}"
@@ -181,7 +166,7 @@ class RepoGraphBuilder:
 
     def _scan_calls_in(self, func_node, caller, mod_name):
         if caller not in self.func_owner:
-            return  # nested/unregistered func; skip for prototype
+            return 
         for child in ast.walk(func_node):
             if isinstance(child, ast.Call):
                 callee = self._resolve_call(child, mod_name)
@@ -202,14 +187,10 @@ class RepoGraphBuilder:
         # Simple name: foo()
         if isinstance(func, ast.Name):
             return self._resolve_name(func.id, caller_module)
-
-        # Attribute chain: a.b.c()
         if isinstance(func, ast.Attribute):
             chain = self._attr_chain(func)
             if not chain:
                 return None
-
-            # self.method()  ->  look in same module for any Class.method
             if chain[0] == "self" and len(chain) == 2:
                 method = chain[1]
                 matches = [
@@ -219,19 +200,14 @@ class RepoGraphBuilder:
                 if len(matches) == 1:
                     return matches[0]
                 return None
-
-            # module.name()  or  ClassName.method()
             if len(chain) == 2:
                 first, second = chain
-                # Try as module.func
                 candidate = f"{first}.{second}"
                 if candidate in self.func_owner:
                     return candidate
-                # Try as current_module.ClassName.method
                 candidate = f"{caller_module}.{first}.{second}"
                 if candidate in self.func_owner:
                     return candidate
-                # Try resolving first as module alias
                 real_mod = self.module_map.get(first)
                 if real_mod:
                     real_mod_name = self.graph.nodes[real_mod]["module"]
@@ -239,9 +215,7 @@ class RepoGraphBuilder:
                     if candidate in self.func_owner:
                         return candidate
 
-            # Deeper chain: module.submodule.func()
             if len(chain) >= 2:
-                # Try longest prefix as module
                 for i in range(len(chain) - 1, 0, -1):
                     mod_candidate = ".".join(chain[:i])
                     func_candidate = ".".join(chain[i:])
@@ -280,8 +254,6 @@ class RepoGraphBuilder:
             return list(reversed(parts))
         return None  # too complex (subscript, call, etc.)
 
-    # ---------- utilities ----------
-
     def _add_typed_edge(self, u, v, edge_type):
         if self.graph.has_edge(u, v):
             existing = self.graph[u][v].get("type")
@@ -291,9 +263,6 @@ class RepoGraphBuilder:
             self.graph[u][v]["type"] = types
         else:
             self.graph.add_edge(u, v, type=edge_type)
-
-    # ---------- export ----------
-
     def to_json(self):
         data = nx.node_link_data(self.graph, edges="edges")
         return json.dumps(data, indent=2)
